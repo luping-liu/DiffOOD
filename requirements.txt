@@ -1,0 +1,13 @@
+torch>=1.10.0
+torchvision
+tensorboard
+pytorch-fid
+scikit-learn
+omegaconf
+PyYAML
+einops
+pandas
+scipy
+numpy
+lmdb
+tqdm

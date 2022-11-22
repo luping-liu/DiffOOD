@@ -1,0 +1,65 @@
+Schedule:
+  type: 'linear'
+  beta_start: 0.0001
+  beta_end: 0.02
+  diffusion_step: 1000
+
+Dataset:
+  dataset: 'CIFAR100'
+  image_size: 32
+  split_block: 0
+  channels: 3
+  batch_size: 128
+  logit_transform: false
+  uniform_dequantization: false
+  gaussian_dequantization: false
+  random_flip: true
+  rescaled: true
+  num_workers: 4
+
+Model:
+  struc: 'DDIM'
+  type: "simple"
+  image_size: 32
+  num_classes:
+  in_channels: 3
+  out_ch: 3
+  ch: 128
+  ch_mult: [ 1, 2, 2, 2 ]
+  num_res_blocks: 2
+  attn_resolutions: [ 16, ]
+  dropout: 0.1
+  var_type: fixedlarge
+  resamp_with_conv: True
+
+Train:
+  epoch: 5000
+  batch_size: 128
+  accum_num: 1
+  iter_type: 'diffusion'
+  iter_interval: 1000
+  train_step: 240
+  t_type: 'symmetry'
+  loss_type: 'square'
+  ema_rate: 0.9999
+  ema: True
+
+Optim:
+  weight_decay: 0.000
+  optimizer: 'adamw'
+  lr: 0.0002
+  warmup: 5000
+  lr_decay: false
+  lr_step: 60000
+  lr_gamma: 0.7
+  beta1: 0.9
+  amsgrad: false
+  eps: 0.00000001
+  grad_clip: 1.0
+
+Sample:
+  batch_size: 512
+  last_only: True
+  total_num: 12500
+
+
