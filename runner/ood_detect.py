@@ -34,8 +34,6 @@ from tqdm.auto import tqdm
 
 from dataset import get_dataset
 from runner.runner import Runner
-from network.ood.resnet18 import ResNet18_32x32
-from network.ood.resnet50 import ResNet50
 from detect.dataset.imglist_dataset import ImglistDataset
 
 
@@ -82,155 +80,49 @@ class KNN(object):
 
 
 class OodDetection(Runner):
-    def __init__(self, args, config, schedule, model):
+    def __init__(self, args, config, schedule, model, discriminator):
         super(OodDetection, self).__init__(args, config, schedule, model)
         # self-train version
-        self.discriminator = ResNet18_32x32(num_classes=10).to(self.device)
-        state_dict = th.load('temp/model/ood_cifar10_res18.ckpt', map_location=self.device)
-        try:
-            self.discriminator.load_state_dict(state_dict, strict=True)
-        except RuntimeError:
-            from collections import OrderedDict
-            new_state_dict = OrderedDict()
-            for k, v in state_dict.items():
-                new_state_dict[k[7:]] = v
-            self.discriminator.load_state_dict(new_state_dict, strict=True)
+        self.discriminator = discriminator
+        state_dict = th.load(self.args.disc_path, map_location=self.device)
+        self.discriminator.load_state_dict(state_dict, strict=True)
         self.discriminator.eval()  # 兄弟，要eval啊！
 
     @th.no_grad()
-    def noise_encoder(self):
-        """
-        generate image representation
-        """
-        model = self.model
-        schedule = self.schedule
-        device = self.device
-        continuous = False
-
-        seq, skip, train_loader = self.before_sample()
-
-        image_list, noise_list = [], []
-
-        def gather(obj):
-            if self.world_size >= 2:
-                obj = obj.cuda()
-                obj_gather = [th.zeros_like(obj) for _ in range(self.world_size)]
-                dist.all_gather(obj_gather, obj)
-                obj = th.cat(obj_gather, dim=0).cpu()
-            return obj
-
-        for (img, y) in tqdm(train_loader, disable=self.rank == self.world_size - 1):
-            img = img.to(device) * 2 - 1
-            noise_repr = schedule.multi_iteration(img, -1, 980 - 1, model,
-                                                  last=True, fresh=True, continuous=continuous)
-
-            image_list.append(img.cpu())
-            noise_list.append(noise_repr.cpu())
-
-        image_list = th.cat(image_list, dim=0)
-        noise_list = th.cat(noise_list, dim=0)
-        if self.world_size >= 2:
-            image_list = gather(image_list).numpy()
-            noise_list = gather(noise_list).numpy()
-
-        if self.rank == 0:
-            print(image_list.shape, noise_list.shape)
-            # np.save(f'{self.args.image_path}/{self.args.category}_{self.args.category_value}.npy', noise)
-            np.save(f'temp/noise/{self.args.model_name}_img_1.npy', image_list)
-            np.save(f'temp/noise/{self.args.model_name}_noise_1.npy', noise_list)
-
-        # for k in tqdm(range(4, 50, 5), desc='gen_edit'):
-        #     t = seq[k] * th.tensor([1] * repeat_size).to(device)
-        #     # print(img.shape, t.shape)
-        #     img_n, _, _ = schedule.diffusion(img, t, noise=noise)
-        #
-        #     noise_r = schedule.multi_iteration(img_n, k * skip - 1, 49 * skip - 1, model,
-        #                                        last=True, fresh=True, continuous=continuous)
-        #     img_r = schedule.multi_iteration(img_n, k * skip - 1, 0 * skip - 1, model,
-        #                                      last=True, fresh=True, continuous=continuous)
-        #
-        #     img_r = th.clamp(img_r * 0.5 + 0.5, 0, 1)
-        #     noise_r = th.clamp(noise_r * 0.5 + 0.5, 0, 1)
-        #     for i in range(repeat_size):
-        #         tvu.save_image(img_r[i], os.path.join(self.args.image_path,
-        #                                               f"img-{i + 1}-{k}.png"))
-        #         tvu.save_image(noise_r[i], os.path.join(self.args.image_path,
-        #                                                 f"noise-{i + 1}-{k}.png"))
-
-    @th.no_grad()
-    def enhancement(self):
-        """
-        test noise enhancement
-        """
-        test_size = 2
-
-        model = self.model
-        schedule = self.schedule
-        device = self.device
-        continuous = False
-
-        seq, skip, train_loader = self.before_sample()
-
-        cat_np = []
-        for (img, y) in train_loader:
-            for i in range(len(y)):
-                if y[i] == 3:
-                    cat_np.append(img[i].numpy())
-            break
-
-        np.save('temp/cat_np.npy', cat_np)
-        # img = img[:test_size].to(device) * 2 - 1
-        #
-        # noise = schedule.multi_iteration(img, - 1, 49 * skip - 1, model,
-        #                                  last=True, fresh=True, continuous=continuous)
-        #
-        # noise = transforms.RandomHorizontalFlip(p=1)(noise)
-        # img_r = schedule.multi_iteration(noise, 49 * skip - 1, - 1, model,
-        #                                  last=True, fresh=True, continuous=continuous)
-        #
-        # img = th.clamp(img * 0.5 + 0.5, 0, 1)
-        # img_r = th.clamp(img_r * 0.5 + 0.5, 0, 1)
-        # for i in range(test_size):
-        #     tvu.save_image(img[i], os.path.join(self.args.image_path,
-        #                                         f"img-{i + 1}.png"))
-        #     tvu.save_image(img_r[i], os.path.join(self.args.image_path,
-        #                                           f"img_r-{i + 1}.png"))
-        #
-        # break
-
-    @th.no_grad()
-    def interp_detect(self):
+    def diff_detect(self):
         batch_size = 250
         iter_size = 4
         iter_size = iter_size // self.world_size if self.world_size >= 2 else iter_size
         repeat_size = self.args.repeat_size
-        knn_num = self.args.debug_value
-        id_name = self.args.model_name
+
+        id_name = self.config['Dataset']['name'].lower()
+        timestep_list = [0, 120, 240, 360]
+        ood_list = ['cifar10', 'cifar100', 'tin', 'svhn', 'texture', 'places365']
+        # ood_list = ['imagenet', 'inaturalist', 'openimage_o', 'imagenet_o', 'species']
 
         model = self.model
         schedule = self.schedule
         device = self.device
-        continuous = False
+
+        def gather(obj):
+            if self.world_size >= 2:
+                obj_ = obj.cuda()
+                if self.rank == 0:
+                    obj_gather = [th.zeros_like(obj_) for _ in range(self.world_size)]
+                    dist.gather(obj_, obj_gather)
+                    obj = th.cat(obj_gather, dim=0).cpu()
+                else:
+                    dist.gather(obj_)
+            return obj
 
         # load model
         self.before_sample()
 
-        def gather(obj):
-            if self.world_size >= 2:
-                obj = obj.cuda()
-                obj_gather = [th.zeros_like(obj) for _ in range(self.world_size)]
-                dist.all_gather(obj_gather, obj)
-                obj = th.cat(obj_gather, dim=0).cpu()
-            return obj
-
-        # load & process dataset
-        ood_list, ood_dict = ['svhn', 'texture', 'places365', 'cifar100', 'cifar10', 'tin'], {}
-        # ood_list, ood_dict = ['imagenet', 'inaturalist', 'openimage_o', 'imagenet_o', 'species'], {}
-
+        # load dataset
         for ood_name in ood_list:
             dataset = ImglistDataset(id_name, 'test', 32,
-                                     f'./data/benchmark_imglist/{id_name}/test_{ood_name}.txt',
-                                     f'./data/images_classic/')
+                                     f'./benchmark_imglist/{id_name}/test_{ood_name}.txt',
+                                     f'./images_classic/')
             if self.world_size >= 2:
                 sampler = data.distributed.DistributedSampler(dataset)
                 ood_loader = data.DataLoader(dataset, batch_size=batch_size, sampler=sampler,
@@ -246,58 +138,162 @@ class OodDetection(Runner):
             mean, std = norm_dict[id_name]
             norm_fn = transforms.Normalize(mean=mean, std=std)
 
-            imgr_np, fea_np, out_np = [[] for _ in range(2)], [[] for _ in range(2)], [[] for _ in range(2)]
+            # main detection process
+            tn = len(timestep_list)
+            num_classes = self.config['Model']['num_classes']
+            imgr_np, feature_np, logit_np = [[] for _ in range(tn)], [[] for _ in range(tn)], [[] for _ in range(tn)]
             for i, output in enumerate(tqdm(ood_loader, total=iter_size, disable=self.rank + 1 - self.world_size,
                                             desc=f'process {ood_name} data')):
+
                 if i == iter_size:
                     for j in range(len(imgr_np)):
                         imgr_np[j] = th.cat(imgr_np[j], dim=0)
-                        fea_np[j] = th.cat(fea_np[j], dim=0)
-                        out_np[j] = th.cat(out_np[j], dim=0)
+                        feature_np[j] = th.cat(feature_np[j], dim=0)
+                        logit_np[j] = th.cat(logit_np[j], dim=0)
                         imgr_np[j] = gather(imgr_np[j]).numpy()
-                        fea_np[j] = gather(fea_np[j]).numpy()
-                        out_np[j] = gather(out_np[j]).numpy()
+                        feature_np[j] = gather(feature_np[j]).numpy()
+                        logit_np[j] = gather(logit_np[j]).numpy()
 
-                    np.savez(f'temp/sample_ood/{id_name}_{ood_name}_knn{knn_num}_{repeat_size}.npz', imgr=imgr_np,
-                             fea=fea_np, out=out_np)
+                    if self.rank == 0:
+                        np.savez(f'temp/sample/{id_name}_{ood_name}_r{repeat_size}.npz', imgr=imgr_np,
+                                 feature=feature_np, logit=logit_np)
                     break
 
                 img = output['data']
                 ood_img = img.to(device) * 2 - 1
 
+                # # generate random noise
                 # loss, ind = index.search(ood_img, repeat_size+1)
                 # noise = index.y[ind[:, -1].reshape(-1)]
                 # noise = th.randn_like(ood_img)
-                noise_list = [th.randn_like(ood_img) for i in range(repeat_size)]
-                out_ = self.discriminator(norm_fn(img.cuda()), return_feature=False)
-                score = th.softmax(out_, dim=1)
-                _, y_pred = th.max(score, dim=1)
+                noise_list = [th.randn_like(ood_img) for _ in range(repeat_size)]
+                if num_classes > 0:
+                    out_ = self.discriminator(norm_fn(img.cuda()), return_feature=False)
+                    score = th.softmax(out_, dim=1)
+                    _, y_pred = th.max(score, dim=1)
+                else:
+                    y_pred = None
 
-                tq = tqdm(total=8 * repeat_size, leave=False, desc='subprocess',
+                tq = tqdm(total=tn * repeat_size, leave=False, desc='subprocess',
                           disable=self.rank + 1 - self.world_size)
-                for j, t in enumerate([0, 240]):  # 1000
-                    imgr_rp, fea_rp, out_rp = [], [], []
+                for j, t in enumerate(timestep_list):
+                    imgr_list, feature_list, logit_list = [], [], []
                     for k in range(repeat_size):
-                        tq.update()
-
                         img_n, _, _ = schedule.diffusion(ood_img, th.ones(batch_size, device=device, dtype=th.long) * t,
                                                          noise=noise_list[k].cuda())
                         # img_n = slerp(noise1, noise, t / 1000.0)
-                        img_r = schedule.multi_iteration(img_n, t - 1, -1, model, y=y_pred,
-                                                         class_num=self.config['Train']['num_classes'],
-                                                         last=True, fresh=True, continuous=continuous)
+                        if num_classes > 0:
+                            img_r = schedule.multi_iteration(img_n, t - 1, -1, model,
+                                                             y=y_pred, num_classes=num_classes, beta=2,
+                                                             last=True, fresh=True)
+                        else:
+                            img_r = schedule.multi_iteration(img_n, t - 1, -1, model,
+                                                             last=True, fresh=True)
+
                         img_r = th.clamp(img_r * 0.5 + 0.5, 0, 1)
-                        img_r = norm_fn(img_r)
-                        logit, feature = self.discriminator(img_r.cuda(), return_feature=True)
+                        img_r_ = norm_fn(img_r)
+                        logit, feature = self.discriminator(img_r_.cuda(), return_feature=True)
 
-                        imgr_rp.append(img_r.cpu())
-                        out_rp.append(logit.cpu())
-                        fea_rp.append(feature.cpu())
+                        imgr_list.append(img_r.cpu())
+                        feature_list.append(feature.cpu())
+                        logit_list.append(logit.cpu())
 
-                    imgr = rearrange(th.stack(imgr_rp, dim=1), 'b r ... -> (b r) ...')
-                    out = rearrange(th.stack(out_rp, dim=1), 'b r ... -> (b r) ...')
-                    fea = rearrange(th.stack(fea_rp, dim=1), 'b r ... -> (b r) ...')
-                    imgr_np[j].append(imgr)
-                    fea_np[j].append(fea)  # 这种写反的错误都能犯？？？
-                    out_np[j].append(out)
+                        tq.update()
+
+                    imgr_ = rearrange(th.stack(imgr_list, dim=1), 'b r ... -> (b r) ...')
+                    feature_ = rearrange(th.stack(feature_list, dim=1), 'b r ... -> (b r) ...')
+                    logit_ = rearrange(th.stack(logit_list, dim=1), 'b r ... -> (b r) ...')
+                    imgr_np[j].append(imgr_)
+                    feature_np[j].append(feature_)  # 这种写反的错误都能犯？？？
+                    logit_np[j].append(logit_)
+
                 tq.close()
+
+    @th.no_grad()
+    def interpolation(self):
+        """
+        test image interpolation
+        """
+        batch_size = 16
+
+        model = self.model
+        schedule = self.schedule
+        device = self.device
+
+        seq, skip, train_loader = self.before_sample()
+
+        def slerp(z1, z2, alpha):
+            theta = th.acos(th.sum(z1 * z2) / (th.norm(z1) * th.norm(z2)))
+            return (th.sin((1 - alpha) * theta) / th.sin(theta) * z1
+                    + th.sin(alpha * theta) / th.sin(theta) * z2)
+
+        img1, img2 = None, None
+        for img, y in train_loader:
+            img1 = img[:batch_size].to(device) * 2 - 1
+            img2 = img[batch_size:batch_size * 2].to(device) * 2 - 1
+            break
+
+        img1_ = th.clamp(img1 * 0.5 + 0.5, 0, 1)
+        img2_ = th.clamp(img2 * 0.5 + 0.5, 0, 1)
+        for i in range(batch_size):
+            tvu.save_image(img1_[i], os.path.join(self.args.image_path,
+                                                  f"img100-{i + 1}.png"))
+            tvu.save_image(img2_[i], os.path.join(self.args.image_path,
+                                                  f"img200-{i + 1}.png"))
+
+        noise1 = schedule.multi_iteration(img1, - 1, 49 * skip - 1, model,
+                                          last=True, fresh=True).to(device)
+        noise2 = schedule.multi_iteration(img2, - 1, 49 * skip - 1, model,
+                                          last=True, fresh=True).to(device)
+
+        timestep_list = list(range(5, 50, 5))
+
+        for k in tqdm(timestep_list, desc='gen_edit1'):
+            t = seq[k] * th.tensor([1] * batch_size).to(device)
+            img_n, _, _ = schedule.diffusion(img1, t, noise=noise2)
+
+            # noise_r = schedule.multi_iteration(img_n, k * skip - 1, 49 * skip - 1, model,
+            #                                    last=True, fresh=True, continuous=continuous)
+            img_r = schedule.multi_iteration(img_n, k * skip - 1, 0 * skip - 1, model,
+                                             last=True, fresh=True)
+
+            img_r = th.clamp(img_r * 0.5 + 0.5, 0, 1)
+            # noise_r = th.clamp(noise_r * 0.5 + 0.5, 0, 1)
+            for i in range(batch_size):
+                tvu.save_image(img_r[i], os.path.join(self.args.image_path,
+                                                      f"img1-{i + 1}-{k}.png"))
+                # tvu.save_image(noise_r[i], os.path.join(self.args.image_path,
+                #                                         f"noise-{i + 1}-{k}.png"))
+
+        for k in tqdm(timestep_list, desc='gen_edit2'):
+            t = seq[k] * th.tensor([1] * batch_size).to(device)
+            img_n, _, _ = schedule.diffusion(img2, t, noise=noise1)
+
+            # noise_r = schedule.multi_iteration(img_n, k * skip - 1, 49 * skip - 1, model,
+            #                                    last=True, fresh=True, continuous=continuous)
+            img_r = schedule.multi_iteration(img_n, k * skip - 1, 0 * skip - 1, model,
+                                             last=True, fresh=True)
+
+            img_r = th.clamp(img_r * 0.5 + 0.5, 0, 1)
+            # noise_r = th.clamp(noise_r * 0.5 + 0.5, 0, 1)
+            for i in range(batch_size):
+                tvu.save_image(img_r[i], os.path.join(self.args.image_path,
+                                                      f"img2-{i + 1}-{k}.png"))
+                # tvu.save_image(noise_r[i], os.path.join(self.args.image_path,
+                #                                         f"noise-{i + 1}-{k}.png"))
+
+        for k in tqdm(timestep_list, desc='gen_edit3'):
+            noise = slerp(noise1, noise2, k / 50.0)
+
+            # noise_r = schedule.multi_iteration(img_n, k * skip - 1, 49 * skip - 1, model,
+            #                                    last=True, fresh=True, continuous=continuous)
+            img_r = schedule.multi_iteration(noise, 49 * skip - 1, - 1, model,
+                                             last=True, fresh=True)
+
+            img_r = th.clamp(img_r * 0.5 + 0.5, 0, 1)
+            # noise_r = th.clamp(noise_r * 0.5 + 0.5, 0, 1)
+            for i in range(batch_size):
+                tvu.save_image(img_r[i], os.path.join(self.args.image_path,
+                                                      f"img3-{i + 1}-{k}.png"))
+                # tvu.save_image(noise_r[i], os.path.join(self.args.image_path,
+                #                                         f"noise-{i + 1}-{k}.png"))

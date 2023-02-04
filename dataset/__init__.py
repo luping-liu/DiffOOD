@@ -11,7 +11,7 @@ from torchvision.datasets import CIFAR10, CIFAR100, SVHN
 from dataset.celeba import CelebA
 # from dataset.ffhq import FFHQ
 from dataset.lsun import LSUN
-from dataset.diffae import CelebAttrDataset, CelebHQAttrDataset
+# from dataset.diffae import CelebAttrDataset, CelebHQAttrDataset
 from torch.utils.data import Subset
 import numpy as np
 
@@ -40,7 +40,7 @@ class Identity(object):
         return img
 
 
-class Split(object):  # todo 将图像处理并入这里
+class Split(object):  # todo 锟斤拷图锟斤拷锟斤拷锟斤拷锟斤拷锟斤拷
     def __init__(self, split_type, split_block, split_smooth=False):
         self.type = split_type
         self.smooth = split_smooth
@@ -56,7 +56,7 @@ class Split(object):  # todo 将图像处理并入这里
             def split_fn(img):
                 c, h, w = img.shape
 
-                img_split = img.view(c, 2, h // 2, 2, w // 2)  # todo 改为rearrange版本
+                img_split = img.view(c, 2, h // 2, 2, w // 2)  # todo 锟斤拷为rearrange锟芥本
                 img_split = img_split.permute(1, 3, 0, 2, 4).reshape(-1, c, h // 2, w // 2)
                 img_split = torch.index_select(img_split, 0, torch.randint(0, 4, (1,)))
 
@@ -109,9 +109,10 @@ class Split(object):  # todo 将图像处理并入这里
 def get_dataset(args, config):
     if config['random_flip'] is False:
         tran_transform = test_transform = transforms.Compose(
-            [transforms.Resize(config['image_size']), transforms.ToTensor(),
-             Split(config['split_type'], config['split_block'], config['split_smooth'])
-             if config['split_block'] > 0 else Identity(), ]
+            [
+                transforms.Resize(config['image_size']),
+                transforms.ToTensor(),
+            ]
         )
     else:
         tran_transform = transforms.Compose(
@@ -119,17 +120,16 @@ def get_dataset(args, config):
                 transforms.Resize(config['image_size']),
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.ToTensor(),
-                Split(config['split_type'], config['split_block'], config['split_smooth'])
-                if config['split_block'] > 0 else Identity(),
             ]
         )
         test_transform = transforms.Compose(
-            [transforms.Resize(config['image_size']), transforms.ToTensor(),
-             Split(config['split_type'], config['split_block'], config['split_smooth'])
-             if config['split_block'] > 0 else Identity(), ]
+            [
+                transforms.Resize(config['image_size']),
+                transforms.ToTensor(),
+            ]
         )
 
-    if config['dataset'] == "CIFAR10":
+    if config['name'] == "CIFAR10":
         dataset = CIFAR10(
             os.path.join(os.getcwd(), "temp/dataset", "cifar10"),
             train=True,
@@ -143,7 +143,7 @@ def get_dataset(args, config):
             transform=test_transform,
         )
 
-    elif config['dataset'] == "CIFAR100":
+    elif config['name'] == "CIFAR100":
         dataset = CIFAR100(
             os.path.join(os.getcwd(), "temp/dataset", "cifar100"),
             train=True,
@@ -157,7 +157,7 @@ def get_dataset(args, config):
             transform=test_transform,
         )
 
-    elif config['dataset'] == "SVHN":
+    elif config['name'] == "SVHN":
         dataset = SVHN(
             os.path.join(os.getcwd(), "temp/dataset", "svhn"),
             split="train",
@@ -171,7 +171,7 @@ def get_dataset(args, config):
             transform=test_transform,
         )
 
-    elif config['dataset'] == "CELEBA":
+    elif config['name'] == "CELEBA":
         cx, cy = 89, 121
         x1 = cy - 64
         x2 = cy + 64
@@ -208,7 +208,7 @@ def get_dataset(args, config):
             download=True,
         )
 
-    elif config['dataset'] == "LSUN":
+    elif config['name'] == "LSUN":
         train_folder = "{}_train".format(config['category'])
         val_folder = "{}_val".format(config['category'])
         dataset = LSUN(
@@ -239,26 +239,26 @@ def get_dataset(args, config):
                 ]
             ),
         )
-    elif config['dataset'] == "CELEBA(attr)":
-        root = os.path.join(os.getcwd(), "temp/dataset", "celeba")
-        attr_path = os.path.join(root, "celeba/list_attr_celeba.txt")
-
-        dataset = CelebAttrDataset(root, image_size=config['image_size'], attr_path=attr_path,
-                                   only_cls_name=args.category, only_cls_value=args.category_value,
-                                   do_augment=True, do_transform=True, do_normalize=False, d2c=True)
-
-        test_dataset = None
-    elif config['dataset'] == "CELEBAHQ(attr)":
-        root = os.path.join(os.getcwd(), "temp/dataset", "celebahq")
-        attr_path = os.path.join(root, "CelebAMask-HQ-attribute.txt")
-
-        split_fn = Split(config['split_type'], config['split_block'], config['split_smooth']) \
-            if config['split_block'] > 0 else None
-        dataset = CelebHQAttrDataset(root, image_size=config['image_size'], attr_path=attr_path,
-                                     only_cls_name=args.category, only_cls_value=args.category_value,
-                                     do_augment=True, do_transform=True, do_normalize=False, split_fn=split_fn)
-
-        test_dataset = None
+    # elif config['name'] == "CELEBA(attr)":
+    #     root = os.path.join(os.getcwd(), "temp/dataset", "celeba")
+    #     attr_path = os.path.join(root, "celeba/list_attr_celeba.txt")
+    #
+    #     dataset = CelebAttrDataset(root, image_size=config['image_size'], attr_path=attr_path,
+    #                                only_cls_name=args.category, only_cls_value=args.category_value,
+    #                                do_augment=True, do_transform=True, do_normalize=False, d2c=True)
+    #
+    #     test_dataset = None
+    # elif config['name'] == "CELEBAHQ(attr)":
+    #     root = os.path.join(os.getcwd(), "temp/dataset", "celebahq")
+    #     attr_path = os.path.join(root, "CelebAMask-HQ-attribute.txt")
+    #
+    #     split_fn = Split(config['split_type'], config['split_block'], config['split_smooth']) \
+    #         if config['split_block'] > 0 else None
+    #     dataset = CelebHQAttrDataset(root, image_size=config['image_size'], attr_path=attr_path,
+    #                                  only_cls_name=args.category, only_cls_value=args.category_value,
+    #                                  do_augment=True, do_transform=True, do_normalize=False, split_fn=split_fn)
+    #
+    #     test_dataset = None
 
     # elif config.data.dataset == "FFHQ":
     #     if config.data.random_flip:

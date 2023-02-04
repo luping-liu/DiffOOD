@@ -1,0 +1,75 @@
+Dataset:
+  name: 'CIFAR10'
+  image_size: 32
+  num_classes: 10
+  channels: 3
+  batch_size: 256
+  logit_transform: false
+  uniform_dequantization: false
+  gaussian_dequantization: false
+  random_flip: true
+  rescaled: true
+  num_workers: 4
+
+Model:
+  struc: 'iDDPM'
+  image_size: 32
+  num_classes: 0
+  in_channels: 3
+  model_channels: 128
+  out_channels: 6
+  num_res_blocks: 3
+  attention_resolutions: [ 2, 4 ]
+  dropout: 0.3
+  channel_mult: [ 1, 2, 2, 2 ]
+  dims: 2
+  conv_resample: true
+  use_scale_shift_norm: true
+  use_checkpoint: false
+  num_heads: 4
+  num_heads_upsample: 4
+
+Schedule:
+  type: 'cosine'
+  diffusion_step: 1000
+  learn_sigma: true
+  sigma_small: false
+  noise_schedule: cosine
+  use_kl: false
+  predict_xstart: false
+  rescale_timesteps: true
+  rescale_learned_sigmas: true
+  timestep_respacing: ddim
+
+Train:
+  epoch: 1000
+  batch_size: 128
+  accum_num: 1
+  cond_ratio: 0.9
+  iter_type: 'diffusion'
+  iter_interval: 1000
+  t_type: 'symmetry'
+  loss_type: 'square'
+  ema_rate: 0.9999
+  ema: True
+
+Optim:
+  weight_decay: 0.000
+  optimizer: 'adamw'
+  lr: 0.0002
+  warmup: 5000
+  lr_decay: false
+  lr_step: 60000
+  lr_gamma: 0.7
+  beta1: 0.9
+  amsgrad: false
+  eps: 0.00000001
+  grad_clip: 1.0
+
+
+Sample:
+  batch_size: 512
+  last_only: true
+  total_num: 12500
+
+

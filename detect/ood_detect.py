@@ -24,24 +24,22 @@ normalizer = lambda x: x / (th.norm(x, dim=-1, keepdim=True) + 1e-10)
 # normalizer = lambda x: x
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--knn_num', '-k', type=int, default=2)
-parser.add_argument('--repeat_size', '-r', type=int, default=1)
+parser.add_argument('--repeat_size', '-r', type=int, default=4)
+parser.add_argument('--space', '-s', type=str, default='logit')
 parser.add_argument('--id_name', '-n', type=str, default='cifar10')
-parser.add_argument('--knn_type', '-t', type=str, default='knn')
 args = parser.parse_args()
 id_name = args.id_name
-knn_num = args.knn_num
 repeat_size = args.repeat_size
-knn_type = args.knn_type
+detect_space = args.space
 
-in_data = np.load(f'temp/sample_ood/{id_name}_{id_name}_{knn_type}{knn_num}_{repeat_size}.npz')
+in_data = np.load(f'temp/sample/{id_name}_{id_name}_r{repeat_size}.npz')
 # ood_list = ['SVHN', 'CELEBA', 'CIFAR100', 'CIFAR10T']
-ood_list = ['svhn', 'texture', 'places365', 'cifar100', 'cifar10', 'tin']
+ood_list = ['cifar10', 'cifar100', 'tin', 'svhn', 'texture', 'places365']
 # ood_list = ['imagenet', 'inaturalist', 'openimage_o', 'imagenet_o', 'species']
-ood_data = {ood_name: np.load(f'temp/sample_ood/{id_name}_{ood_name}_{knn_type}{knn_num}_{repeat_size}.npz')
+ood_data = {ood_name: np.load(f'temp/sample/{id_name}_{ood_name}_r{repeat_size}.npz')
             for ood_name in ood_list if ood_name != id_name}
 
-in_fea = th.from_numpy(in_data['fea'])
+in_fea = th.from_numpy(in_data[detect_space])
 in_fea = normalizer(in_fea.view(*in_fea.shape[:2], -1))
 in_fea = rearrange(in_fea, 'm (b r) ... ->m b r ...', r=repeat_size)
 print(in_fea.shape)
@@ -59,7 +57,7 @@ avg_auroc = [[] for _ in range(min(8, width_num))]
 for name in ood_list:
     if name == id_name:
         continue
-    ood_fea = th.from_numpy(ood_data[name]['fea'])
+    ood_fea = th.from_numpy(ood_data[name][detect_space])
     ood_fea = normalizer(ood_fea.view(*ood_fea.shape[:2], -1))
     ood_fea = rearrange(ood_fea, 'm (b r) ... ->m b r ...', r=repeat_size)
     # ind = ood_fea[0].max(dim=1)[1].view(-1, 1)

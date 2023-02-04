@@ -15,13 +15,10 @@
 
 import argparse
 import yaml
-import sys
 import os
-import numpy as np
 import torch as th
 
 from runner.schedule import Schedule
-from runner.runner import Runner
 
 
 def args_and_config():
@@ -29,36 +26,39 @@ def args_and_config():
 
     parser.add_argument("--runner", type=str, default='sample',
                         help="Choose the mode of runner")
-    parser.add_argument("--config", type=str, default='32_cifar10.yml',
+    parser.add_argument("--config", type=str, default='config/ddim_cifar10_base.yml',
                         help="Choose the config file")
     parser.add_argument("--model", type=str, default='DDIM',
-                        help="Choose the model's structure (DDIM, iDDPM, PF)")
+                        help="Choose the diffusion model's structure (DDIM, iDDPM)")
+    parser.add_argument("--disc", type=str, default='ResNet18',
+                        help="Choose the discriminator model's structure (ResNet18, PyramidNet)")
     parser.add_argument("--method", type=str, default='PNDM4',
-                        help="Choose the numerical methods (DDIM, PNDM2, PNDM4, NDM1, NDM4, PF)")
-    parser.add_argument("--sample_speed", type=int, default=50,
+                        help="Choose the numerical methods (DDIM, PNDM2, PNDM4, NDM1, NDM4)")
+    parser.add_argument("--sample_step", type=int, default=50,
                         help="Control the total generation step")
     parser.add_argument("--device", type=str, default='cuda',
                         help="Choose the device to use")
     parser.add_argument("--image_path", type=str, default='temp/sample',
                         help="Choose the path to save images")
-    parser.add_argument("--category", type=str, default='None',
-                        help="Choose the category of images")
-    parser.add_argument("--category_value", type=int, default=1,
-                        help="Choose the value of the category of images")
     parser.add_argument("--model_path", type=str, default='temp/model/ddim_cifar10.ckpt',
-                        help="Choose the path of model")
-    parser.add_argument("--model_name", type=str, default='cifar10',
-                        help="Set the model's name")
-    parser.add_argument("--repeat_size", type=int, default=1,
-                        help="Set the model's name")
+                        help="Choose the path of diffusion model")
+    parser.add_argument("--disc_path", type=str, default='temp/model/res18_cifar10.ckpt',
+                        help="Choose the path of discriminator model")
     parser.add_argument("--restart", action="store_true",
                         help="Restart a previous training process")
     parser.add_argument("--train_path", type=str, default='temp/train',
                         help="Choose the path to save training status")
-    parser.add_argument("--reinitialize", type=str, default=None,
-                        help="Choose certain part of the model to fine tune")
-    parser.add_argument("--debug_value", type=int, default=1,
-                        help="Set the debug value")
+    parser.add_argument("--repeat_size", type=int, default=4,
+                        help="Set the model's name")
+
+    # parser.add_argument("--category", type=str, default='None',
+    #                     help="Choose the category of images")
+    # parser.add_argument("--model_name", type=str, default='cifar10',
+    #                     help="Set the model's name")
+    # parser.add_argument("--reinitialize", type=str, default=None,
+    #                     help="Choose certain part of the model to fine tune")
+    # parser.add_argument("--debug_value", type=int, default=1,
+    #                     help="Set the debug value")
 
     args = parser.parse_args()
 
@@ -69,9 +69,11 @@ def args_and_config():
     if world_size >= 2:
         parser.set_defaults(device=th.device(args.device, rank))
         args = parser.parse_args()
+        th.cuda.set_device(rank)
 
+    assert args.model.lower() in args.config
     work_dir = os.getcwd()
-    with open(f'{work_dir}/config/{args.config}', 'r') as f:
+    with open(f'{work_dir}/{args.config}', 'r') as f:
         config = yaml.safe_load(f)
 
     return args, config
@@ -89,31 +91,49 @@ if __name__ == "__main__":
     device = th.device(args.device)
     schedule = Schedule(args, config['Schedule'])
 
-    # Load model
+    # Load diffusion model
     if config['Model']['struc'] == 'DDIM':
-        from model.ddim import Model
-        model = Model(args, config['Model']).to(device)
+        from network.ddim.ddim import Model
+        diffusion = Model(args, config['Model']).to(device)
+    elif config['Model']['struc'] == 'iDDPM':
+        from network.iddpm.unet import UNetModel
+        # The Unet network used by latent diffusion & stable diffusion
+        diffusion = UNetModel(args, config['Model']).to(device)
     else:
-        model = None
+        diffusion = None
+
+    # Load discriminator model
+    if args.disc == 'ResNet18':
+        from network.ood.resnet18 import ResNet18_32x32
+        # num_blocks = [2, 2, 2, 2]
+        discriminator = ResNet18_32x32(num_classes=config['Dataset']['num_classes']).to(device)
+    elif args.disc == 'PyramidNet':
+        from network.ood.pyramidnet import PyramidNet
+        # depth=164, alpha=200, bottleneck=True
+        discriminator = PyramidNet(num_classes=config['Dataset']['num_classes']).to(device)
+    else:
+        discriminator = None
 
     # Load runner
-    if args.runner == 'base_train':
-        runner = Runner(args, config, schedule, model)
+    if args.runner == 'training':
+        from runner.runner import Runner
+        runner = Runner(args, config, schedule, diffusion)
         runner.train_loop()
-    elif args.runner == 'base_fid':
-        runner = Runner(args, config, schedule, model)
+    elif args.runner == 'fid':
+        from runner.runner import Runner
+        runner = Runner(args, config, schedule, diffusion)
         runner.sample_fid()
-    elif args.runner == 'ood_repr':
+    elif args.runner == 'detection':
         from runner.ood_detect import OodDetection
-        runner = OodDetection(args, config, schedule, model)
-        runner.noise_encoder()
-    elif args.runner == 'ood_ehc':
+        runner = OodDetection(args, config, schedule, diffusion, discriminator)
+        runner.diff_detect()
+    elif args.runner == 'interpolation':
         from runner.ood_detect import OodDetection
-        runner = OodDetection(args, config, schedule, model)
-        runner.enhancement()
-    elif args.runner == 'ood_itp':
-        from runner.ood_detect import OodDetection
-        runner = OodDetection(args, config, schedule, model)
-        runner.interp_detect()
+        runner = OodDetection(args, config, schedule, diffusion, discriminator)
+        runner.interpolation()
+    elif args.runner == 'test':
+        from runner.runner import Runner
+        runner = Runner(args, config, schedule, diffusion)
+        runner.test()
     else:
         print(f'Do not find the runner {args.runner}.')

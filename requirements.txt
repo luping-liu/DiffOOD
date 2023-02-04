@@ -3,11 +3,12 @@ torchvision
 tensorboard
 pytorch-fid
 scikit-learn
-omegaconf
+tabulate
+sklearn
 PyYAML
+Pillow
 einops
-pandas
-scipy
 numpy
-lmdb
+scipy
 tqdm
+lmdb

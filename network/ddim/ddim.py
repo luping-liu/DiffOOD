@@ -390,7 +390,7 @@ class Model(nn.Module):
                                         stride=1,
                                         padding=1)
 
-        if self.num_classes is not None:
+        if self.num_classes > 0:
             self.label_emb = nn.Embedding(self.num_classes + 1, self.temb_ch)
 
     def forward(self, x, t, y=None, fine_tune=False):
@@ -402,7 +402,7 @@ class Model(nn.Module):
         temb = nonlinearity(temb)
         temb = self.temb.dense[1](temb)
 
-        if self.num_classes is not None:
+        if self.num_classes > 0:
             temb = temb + self.label_emb(y)
 
         # downsampling

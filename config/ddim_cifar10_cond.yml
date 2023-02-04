@@ -1,15 +1,9 @@
-Schedule:
-  type: 'linear'
-  beta_start: 0.0001
-  beta_end: 0.02
-  diffusion_step: 1000
-
 Dataset:
-  dataset: 'CIFAR10'
+  name: 'CIFAR10'
   image_size: 32
-  split_block: 0
+  num_classes: 10
   channels: 3
-  batch_size: 256
+  batch_size: 128
   logit_transform: false
   uniform_dequantization: false
   gaussian_dequantization: false
@@ -21,7 +15,7 @@ Model:
   struc: 'DDIM'
   type: "simple"
   image_size: 32
-  num_classes:
+  num_classes: 10
   in_channels: 3
   out_ch: 3
   ch: 128
@@ -32,10 +26,17 @@ Model:
   var_type: fixedlarge
   resamp_with_conv: True
 
+Schedule:
+  type: 'linear'
+  beta_start: 0.0001
+  beta_end: 0.02
+  diffusion_step: 1000
+
 Train:
   epoch: 5000
-  batch_size: 256
+  batch_size: 128
   accum_num: 1
+  cond_ratio: 0.9
   iter_type: 'diffusion'
   iter_interval: 1000
   t_type: 'symmetry'

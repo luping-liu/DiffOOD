@@ -14,6 +14,8 @@
 
 
 import math
+import sys
+
 import torch as th
 import torchvision.transforms.functional as F
 import numpy as np
@@ -21,7 +23,7 @@ from scipy import integrate
 from einops import rearrange
 from collections import deque
 
-from method.pndm import Pseudo_Numerical_Method, gen_pflow
+from runner.method import Pseudo_Numerical_Method, gen_pflow
 
 
 def get_schedule(args, config):
@@ -69,7 +71,7 @@ class Schedule(object):
         self.alphas_cump_recip_sqrt = th.sqrt(1.0 / alphas_cump)
         self.alphas_cump_recip_m1_sqrt = th.sqrt(1.0 / alphas_cump - 1.0)
         self.diffusion_step = config['diffusion_step']
-        self.sample_speed = args.sample_speed
+        self.sample_step = args.sample_step
 
         mtd_dict = {'NDM1': ('Linear', 'FE1'), 'NDM4': ('Linear', 'LMS4'),
                     'DDIM': ('DDIM', 'FE1'), 'PNDM2': ('DDIM', 'LMS2'), 'PNDM4': ('DDIM', 'LMS4')}
@@ -117,103 +119,8 @@ class Schedule(object):
 
         return img_next, noise
 
-    def splitter(self, img, split_type, split_block=4):
-        """
-        切块模块，目前还是输入数据集数据，后续要改为输入生成的低分辨率样本
-        """
-        if split_type == 'corner':
-            pass
-        elif split_type == 'center':
-            _, _, h, w = img.shape
-            assert h == w
-            split_ratio = int(math.sqrt(split_block))
-            h_new, w_new = h // split_ratio, w // split_ratio
-
-            img = F.pad(img, [h_new // 2] * 4)
-            img_condition_list = [F.crop(img, x * h_new, y * h_new, 2 * h_new, 2 * h_new)
-                                  for x in range(split_ratio) for y in range(split_ratio)]
-            img_condition = th.stack(img_condition_list, dim=1)
-            img_condition = rearrange(img_condition, 'b r ... -> (b r) ...')
-
-            img_split = F.crop(img_condition, h_new // 2, h_new // 2, h_new, h_new)
-            img_condition = F.resize(img_condition, [h_new, h_new])
-            img_input = th.cat([img_split, img_condition], dim=1)
-
-            return img_input
-        elif split_type == 'onestep':
-            _, _, h, w = img.shape
-            assert h == w
-            split_ratio = int(math.sqrt(split_block))
-            h_new, w_new = h * 2 // split_ratio, w * 2 // split_ratio
-
-            img = F.pad(img, [h_new // 4] * 4)
-            img_condition_list = [F.crop(img, x * h_new // 2, y * h_new // 2, h_new, h_new)
-                                  for x in range(split_ratio) for y in range(split_ratio)]
-            img_condition = th.stack(img_condition_list, dim=1)
-            img_condition = rearrange(img_condition, 'b r ... -> (b r) ...')
-
-            img_input = th.cat([th.randn_like(img_condition), img_condition], dim=1)
-
-            return img_input
-        elif split_type == 'resize':
-            _, _, h, w = img.shape
-            assert h == w
-            split_ratio = int(math.sqrt(split_block))
-            h_new, w_new = h * 2 // split_ratio, w * 2 // split_ratio
-
-            img_condition_list = [F.crop(img, x * h_new // 2, y * h_new // 2, h_new // 2, h_new // 2)
-                                  for x in range(split_ratio) for y in range(split_ratio)]
-            img_condition = th.stack(img_condition_list, dim=1)
-            img_condition = rearrange(img_condition, 'b r ... -> (b r) ...')
-
-            img_condition = F.resize(img_condition, [h_new] * 2)
-            img_input = th.cat([th.randn_like(img_condition), img_condition], dim=1)
-
-            return img_input
-        elif split_type == 'split_pad':
-            _, _, h, w = img.shape
-            assert h == w
-            split_ratio = int(math.sqrt(split_block))
-            h_new, w_new = h // split_ratio, w // split_ratio
-
-            # img = F.resize(img, [h_new * 2] * 2)
-            img = F.pad(img, [4]*4)
-            img = th.cat([th.randn_like(img), img], dim=1)
-            img_condition_list = [F.crop(img, x * h_new, y * h_new, h_new + 8, h_new + 8)
-                                  for x in range(split_ratio) for y in range(split_ratio)]
-            img_condition = th.stack(img_condition_list, dim=1)
-            img_condition = rearrange(img_condition, 'b r ... -> (b r) ...')
-
-            img_input = img_condition
-
-            return img_input
-
-    def collection(self, img, split_block, pad=0, last=False):
-        split_ratio = int(math.sqrt(split_block))
-        if last:
-            img = img[..., pad:-pad, pad:-pad] if pad > 0 else img
-            img_col = rearrange(img, '(b r1 r2) c h w -> b c (r1 h) (r2 w)', r1=split_ratio, r2=split_ratio)
-
-            return img_col
-        else:
-            average_1 = th.arange(1, 9, device=self.device).view(1, 1, 1, 1, 8, 1) / 9
-            average_2 = average_1.view(1, 1, 1, 1, 1, 8)
-
-            img_col = rearrange(img, '(b r1 r2) ... -> b r1 r2 ...', r1=split_ratio, r2=split_ratio)
-            for i in range(split_ratio-1):
-                correction = img_col[:, i, ..., -8:, :] * (1 - average_1) + img_col[:, i+1, ..., :8, :] * average_1
-                img_col[:, i, ..., -8:, :] = img_col[:, i+1, ..., :8, :] = correction
-
-            for j in range(split_ratio-1):
-                correction = img_col[:, :, j, ..., -8:] * (1 - average_2) + img_col[:, :, j+1,  ..., :8] * average_2
-                img_col[:, :, j, ..., -8:] = img_col[:, :, j+1,  ..., :8] = correction
-
-            img_col = rearrange(img_col, 'b r1 r2 ... -> (b r1 r2) ...')
-
-            return img_col
-
     @th.no_grad()
-    def multi_iteration(self, img_n, t_start, t_end, model, seq=None, y=None, class_num=10, split_block=0,
+    def multi_iteration(self, img_n, t_start, t_end, model, seq=None, y=None, num_classes=0, beta=2, split_block=0,
                         last=True, fresh=True, continuous=False):
         """
         Multi_iteration is designed for both multistep diffusion and multistep denoising.
@@ -246,9 +153,10 @@ class Schedule(object):
             # print(len(imgs), len(self.count))
             # sys.exit()
         else:
+            # PNDM is here.
             imgs = [img_n.to(self.device)]
             n = img_n.shape[0]
-            speed = np.sign(t_end - t_start) * (self.diffusion_step // self.sample_speed)
+            speed = np.sign(t_end - t_start) * (self.diffusion_step // self.sample_step)
 
             if seq is None:
                 seq = range(t_start, t_end, speed)
@@ -258,7 +166,15 @@ class Schedule(object):
                 self.e_simple = deque(maxlen=4)
                 self.e_accum = []
 
-            if self.args.method in ('NDM1', 'NDM4'):
+            if self.args.method in ('DDIM', 'PNDM2', 'PNDM4'):
+                def grad(x, t):
+                    if num_classes > 0:
+                        uncond = th.ones_like(y) * num_classes
+                        out = (1 + beta) * model(x, t, y=y) - beta * model(x, t, y=uncond)
+                    else:
+                        out = model(x, t)
+                    return out
+            else:
                 seq, seq_next = np.array(seq) / self.diffusion_step, np.array(seq_next) / self.diffusion_step
 
                 def grad(x, t):
@@ -275,17 +191,7 @@ class Schedule(object):
                     score = - model(x, t_start * (total_step - 1)) / std.view(-1, 1, 1, 1)  # score -> noise
                     drift = drift - diffusion.view(-1, 1, 1, 1) ** 2 * score * 0.5  # drift -> dx/dt
 
-                    if split_block > 0:
-                        drift = self.collection(drift, split_block)
                     return drift
-            else:
-                def grad(x, t):  # careful!
-                    uncond, beta = th.ones_like(y) * class_num, 2
-                    out = (1 + beta) * model(x, t, y=y) - beta * model(x, t, y=uncond)
-                    # out = model(x, t)
-                    if split_block > 0:
-                        out = self.collection(out, split_block)
-                    return out
 
             for i, j in zip(seq, seq_next):
                 t = (th.ones(n, device=self.device) * i)
@@ -300,92 +206,3 @@ class Schedule(object):
             return imgs[-1].to('cpu')
         else:
             return imgs
-
-    @th.no_grad()
-    def mask_iteration(self, img, noise, mask, t_start, t_end, model,
-                       seq=None, last=True, fresh=True):
-        if t_end == t_start:
-            return img.to('cpu')
-
-        img_n, _, _ = self.diffusion(img, t_start, noise)
-
-        imgs = [img_n.to(self.device)]
-        n = img_n.shape[0]
-        speed = np.sign(t_end - t_start) * (self.diffusion_step // self.sample_speed)
-
-        if seq is None:
-            seq = range(t_start, t_end, speed)
-        seq_next = list(seq)[1:] + [t_end]
-
-        if fresh:
-            self.ets = []
-            self.noise = []
-
-        if self.args.method in ('NDM1', 'NDM4'):
-            seq, seq_next = np.array(seq) / self.diffusion_step, np.array(seq_next) / self.diffusion_step
-
-            def grad(x, t):
-                total_step = self.diffusion_step
-                beta_0, beta_1 = self.betas[0], self.betas[-1]
-
-                t_start = th.ones(n, device=x.device) * t
-                beta_t = (beta_0 + t_start * (beta_1 - beta_0)) * total_step
-                log_mean_coeff = (-0.25 * t_start ** 2 * (beta_1 - beta_0) - 0.5 * t_start * beta_0) * total_step
-                std = th.sqrt(1. - th.exp(2. * log_mean_coeff))
-
-                # drift, diffusion -> f(x,t), g(t)
-                drift, diffusion = -0.5 * beta_t.view(-1, 1, 1, 1) * x, th.sqrt(beta_t)
-                score = - model(x, t_start * (total_step - 1)) / std.view(-1, 1, 1, 1)  # score -> noise
-                drift = drift - diffusion.view(-1, 1, 1, 1) ** 2 * score * 0.5  # drift -> dx/dt
-
-                return drift
-        else:
-            def grad(x, t):
-                return model(x, t)
-
-        for i, j in zip(seq, seq_next):
-            t = (th.ones(n, device=self.device) * i)
-            t_next = (th.ones(n, device=self.device) * j)
-
-            img_t = imgs[-1]
-            img_next = self.denoising(img_t, t, t_next, grad, continuous=False)
-
-            img_next_ = self.diffusion(img, t_next, noise)
-            img_next[:, (mask == 1.)] = img_next_[:, (mask == 1.)]
-            # noise是不是也要改？
-            # 调控空间是不是可以更灵活？
-
-            imgs.append(img_next.detach())
-
-        if last:
-            return imgs[-1].to('cpu')
-        else:
-            return imgs
-
-    def correction(self, img_n, t_start, t_end, model, first_step=False):
-        method = Pseudo_Numerical_Method('DDIM', 'FE1')
-        device = self.device
-        n, img_n = img_n.shape[0], img_n.to(device)
-        t_start = (th.ones(n, device=device) * t_start)
-        t_end = (th.ones(n, device=device) * t_end)
-        if first_step:
-            self.ets = []
-        img_next = method(img_n, t_start, t_end, model, self.alphas_cump, self.ets)
-        return img_next.to('cpu')
-
-    def diffusion_resample(self, img, t_end, span, noise, teacher=None):
-        t_add = th.randint_like(t_end, 0, 2 * span)
-
-        alpha = self.alphas_cump.index_select(0, t_end).view(-1, 1, 1, 1)
-        alpha_pre = self.alphas_cump.index_select(0, t_end + t_add).view(-1, 1, 1, 1)
-        alpha_pre_sqrt = self.alphas_cump_sqrt.index_select(0, t_end + t_add).view(-1, 1, 1, 1)
-        alpha_1m_sqrt = self.alphas_cump_1m_sqrt.index_select(0, t_end).view(-1, 1, 1, 1)
-        alpha_pre_1m_sqrt = self.alphas_cump_1m_sqrt.index_select(0, t_end + t_add).view(-1, 1, 1, 1)
-        alpha_recip_sqrt = self.alphas_cump_recip_sqrt.index_select(0, t_end).view(-1, 1, 1, 1)
-        alpha_recip_m1_sqrt = self.alphas_cump_recip_m1_sqrt.index_select(0, t_end).view(-1, 1, 1, 1)
-
-        img_c = alpha_recip_sqrt * img - alpha_recip_m1_sqrt * noise
-        noise_ = (noise * alpha_1m_sqrt + th.randn_like(noise) * th.sqrt(alpha - alpha_pre)) / alpha_pre_1m_sqrt
-        img_n = img_c * alpha_pre_sqrt + noise_ * alpha_pre_1m_sqrt
-
-        return img_n, t_end + t_add, noise_
