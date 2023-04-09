@@ -67,7 +67,7 @@ python detect/ood_detect.py --id_name cifar10 --space logit  --repeat_size 4
 
 ### Datasets & checkpoints
 
-All datasets, precalculated statistics for FID and checkpoints of models are provided in this [Onedrive](https://zjueducn-my.sharepoint.com/:f:/g/personal/3170105432_zju_edu_cn/Emku5883xv5AqG6pRUXFM_oBXPSqieX-6rdT81MSsoGeMA).
+All datasets, precalculated statistics for FID and checkpoints of models are provided in this [aliyundrive](https://www.aliyundrive.com/s/y7dwTLSw6Ft).
 
 
 ## References
